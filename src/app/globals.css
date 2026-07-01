@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ *
+ * Dark finance-dashboard theme
+ * ------------------------------------------------------------------ */
+:root {
+  --bg: #0b0f17;
+  --bg-elevated: #111725;
+  --surface: #141b2b;
+  --surface-2: #1a2335;
+  --border: #26304a;
+  --border-soft: #1e2740;
+  --text: #e6ecf5;
+  --text-muted: #8a97b2;
+  --text-faint: #5c6885;
+  --accent: #6366f1;
+  --accent-2: #22d3ee;
+  --gain: #22c55e;
+  --gain-soft: #14351f;
+  --loss: #f43f5e;
+  --loss-soft: #3a141f;
+  --warn: #f59e0b;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+* {
+  border-color: var(--border-soft);
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(99, 102, 241, 0.08), transparent 60%),
+    radial-gradient(900px 500px at -10% 0%, rgba(34, 211, 238, 0.06), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers align nicely in tables */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Reusable surfaces */
+.card {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--bg-elevated) 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.hairline {
+  border-color: var(--border);
+}
+
+/* Thin scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

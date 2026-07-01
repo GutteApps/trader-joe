@@ -1,0 +1,124 @@
+// Portfolio Tracker — data model
+// Money/quantities are Float for clean JSON + charting during dummy trading.
+// When we go to real money, tighten these to Decimal.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled connection (Supabase PgBouncer, port 6543) — used by the app at runtime.
+  url       = env("DATABASE_URL")
+  // Direct connection (port 5432) — used by `prisma migrate` / `db push`.
+  directUrl = env("DIRECT_URL")
+}
+
+enum PortfolioType {
+  FAKE
+  REAL
+}
+
+enum AssetType {
+  CRYPTO
+  STOCK
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum TradeSource {
+  BOT
+  MANUAL
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+}
+
+enum RecommendationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+model Portfolio {
+  id           String        @id @default(cuid())
+  name         String
+  type         PortfolioType @default(FAKE)
+  baseCurrency String        @default("USD")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  positions       Position[]
+  trades          Trade[]
+  recommendations Recommendation[]
+
+  @@index([type])
+}
+
+model Position {
+  id          String         @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio      @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  symbol      String
+  name        String?
+  assetType   AssetType
+  quantity    Float          @default(0)
+  avgCost     Float          @default(0) // average cost basis per unit
+  realizedPnl Float          @default(0)
+  status      PositionStatus @default(OPEN)
+  openedAt    DateTime       @default(now())
+  closedAt    DateTime?
+
+  trades Trade[]
+
+  @@unique([portfolioId, symbol])
+  @@index([portfolioId, status])
+}
+
+model Trade {
+  id          String      @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio   @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  positionId  String?
+  position    Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  symbol      String
+  assetType   AssetType
+  side        TradeSide
+  quantity    Float
+  price       Float // price per unit, in portfolio base currency
+  fee         Float       @default(0)
+  approvedBy  String? // who approved the trade (e.g. from the WhatsApp group)
+  source      TradeSource @default(BOT)
+  note        String?
+  executedAt  DateTime    @default(now())
+  createdAt   DateTime    @default(now())
+
+  @@index([portfolioId, executedAt])
+  @@index([symbol])
+}
+
+model Recommendation {
+  id           String               @id @default(cuid())
+  portfolioId  String?
+  portfolio    Portfolio?           @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  symbol       String
+  name         String?
+  assetType    AssetType
+  rationale    String? // why the bot recommends this asset
+  targetPrice  Float?
+  suggestedQty Float?
+  priceAtRec   Float? // market price when recommended
+  status       RecommendationStatus @default(PENDING)
+  approvedBy   String?
+  tradeId      String? // set when an approval turns into a buy
+  createdAt    DateTime             @default(now())
+  decidedAt    DateTime?
+
+  @@index([status, createdAt])
+}

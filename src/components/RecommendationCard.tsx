@@ -7,6 +7,7 @@ import {
   type ActionState,
 } from "@/app/actions";
 import { AssetBadge } from "@/components/ui";
+import SignalChart from "@/components/charts/SignalChart";
 import { fmtCurrency, fmtDateTime } from "@/lib/format";
 
 const initial: ActionState = {};
@@ -82,6 +83,10 @@ export default function RecommendationCard({
             <span className="tabular text-text">{rec.suggestedQty}</span>
           </span>
         ) : null}
+      </div>
+
+      <div className="mt-3 border-t border-border-soft pt-3">
+        <SignalChart symbol={rec.symbol} assetType={rec.assetType} />
       </div>
 
       {!expanded ? (

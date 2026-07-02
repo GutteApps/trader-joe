@@ -7,7 +7,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Portfolio Tracker",
+  title: "TraderJew",
   description: "Track fake & real trading portfolios driven by the claw bot.",
 };
 
@@ -27,7 +27,7 @@ export default function RootLayout({
                 ◈
               </span>
               <span className="text-[15px] font-semibold tracking-tight">
-                Portfolio<span className="text-muted">Tracker</span>
+                Trader<span className="text-muted">Jew</span>
               </span>
             </Link>
             <nav className="flex items-center gap-1 text-sm">

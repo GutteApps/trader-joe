@@ -31,6 +31,8 @@ async function cached<T>(
 
 async function safeFetch(url: string, opts?: RequestInit): Promise<Response | null> {
   try {
+    // Note: deliberately no custom User-Agent — Yahoo Finance rate-limits (429)
+    // browser-like UAs from servers but serves the default runtime UA fine.
     const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     return res;
@@ -116,9 +118,22 @@ async function stockQuote(symbol: string): Promise<number | null> {
       if (data.c && data.c > 0) return data.c;
     }
   }
-  // keyless fallback: last close from Stooq
-  const hist = await stockHistory(symbol, 5);
-  return hist.length ? hist[hist.length - 1].price : null;
+  // keyless: Yahoo live price, falling back to the last daily close.
+  const sym = encodeURIComponent(symbol.toUpperCase());
+  const res = await safeFetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=5d&interval=1d`,
+  );
+  if (res) {
+    const json = (await res.json()) as YahooChart;
+    const r = json.chart?.result?.[0];
+    const live = r?.meta?.regularMarketPrice;
+    if (live && Number.isFinite(live)) return live;
+    const closes = (r?.indicators?.quote?.[0]?.close ?? []).filter(
+      (c): c is number => c != null && Number.isFinite(c),
+    );
+    if (closes.length) return closes[closes.length - 1];
+  }
+  return null;
 }
 
 export async function getQuote(
@@ -159,21 +174,41 @@ async function cryptoHistory(symbol: string, days: number): Promise<PricePoint[]
   return (data.prices ?? []).map(([t, price]) => ({ t, price }));
 }
 
+type YahooChart = {
+  chart?: {
+    result?: Array<{
+      timestamp?: number[];
+      meta?: { regularMarketPrice?: number };
+      indicators?: { quote?: Array<{ close?: (number | null)[] }> };
+    }>;
+  };
+};
+
+function yahooRange(days: number): string {
+  if (days <= 5) return "5d";
+  if (days <= 32) return "1mo";
+  if (days <= 93) return "3mo";
+  if (days <= 186) return "6mo";
+  return "1y";
+}
+
 async function stockHistory(symbol: string, days: number): Promise<PricePoint[]> {
-  // Stooq daily CSV, no key required. US tickers use the ".us" suffix.
-  const s = symbol.toLowerCase();
-  const ticker = s.includes(".") ? s : `${s}.us`;
-  const res = await safeFetch(`https://stooq.com/q/d/l/?s=${ticker}&i=d`);
+  // Yahoo Finance chart API — no key. Works for stocks, ETFs (SPY/QQQ/GLD)
+  // and indices. Symbols are used as-is (uppercased).
+  const sym = encodeURIComponent(symbol.toUpperCase());
+  const res = await safeFetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${yahooRange(days)}&interval=1d`,
+  );
   if (!res) return [];
-  const text = await res.text();
-  const lines = text.trim().split("\n");
-  if (lines.length < 2) return [];
+  const json = (await res.json()) as YahooChart;
+  const r = json.chart?.result?.[0];
+  const ts = r?.timestamp ?? [];
+  const closes = r?.indicators?.quote?.[0]?.close ?? [];
   const points: PricePoint[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const [date, , , , close] = lines[i].split(",");
-    const price = Number(close);
-    const t = new Date(`${date}T00:00:00Z`).getTime();
-    if (Number.isFinite(price) && Number.isFinite(t)) points.push({ t, price });
+  for (let i = 0; i < ts.length; i++) {
+    const price = closes[i];
+    if (price == null || !Number.isFinite(price)) continue;
+    points.push({ t: ts[i] * 1000, price });
   }
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   return points.filter((p) => p.t >= cutoff);

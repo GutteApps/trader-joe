@@ -1,4 +1,4 @@
-# Portfolio Tracker
+# TraderJew
 
 A visually-clean tracker for **paper (fake)** and **real** trading portfolios,
 driven by an external "claw bot". The bot posts daily asset signals; the group

@@ -3,7 +3,12 @@ import { notFound } from "next/navigation";
 import { getPortfolioView } from "@/lib/queries";
 import { getValueSeries } from "@/lib/portfolio";
 import { getHistory } from "@/lib/prices";
-import ValueChart from "@/components/charts/ValueChart";
+import {
+  BENCHMARKS,
+  DEFAULT_BENCHMARK_KEY,
+  getBenchmark,
+} from "@/lib/benchmarks";
+import PerformanceChart from "@/components/charts/PerformanceChart";
 import AssetChart from "@/components/charts/AssetChart";
 import AllocationChart from "@/components/charts/AllocationChart";
 import TradeForm from "@/components/TradeForm";
@@ -29,13 +34,15 @@ export default async function PortfolioPage({
   const { portfolio, metrics, trades } = view;
   const cur = portfolio.baseCurrency;
 
-  const [valueSeries, assetHistories] = await Promise.all([
+  const defaultBenchmark = getBenchmark(DEFAULT_BENCHMARK_KEY)!;
+  const [valueSeries, assetHistories, benchmarkSeries] = await Promise.all([
     getValueSeries(id, 30),
     Promise.all(
       metrics.positions.map((p) =>
         getHistory(p.position.symbol, p.position.assetType, 30),
       ),
     ),
+    getHistory(defaultBenchmark.symbol, defaultBenchmark.assetType, 30),
   ]);
 
   const allocation = metrics.positions.map((p) => ({
@@ -108,19 +115,26 @@ export default async function PortfolioPage({
       <div className="grid gap-6 lg:grid-cols-3">
         {/* left/main column */}
         <div className="space-y-6 lg:col-span-2">
-          {/* value chart */}
+          {/* performance vs benchmark */}
           <section className="card p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-muted">
-                Portfolio value · 30d
-              </h2>
-            </div>
             {valueSeries.length > 1 ? (
-              <ValueChart data={valueSeries} currency={cur} />
+              <PerformanceChart
+                valueSeries={valueSeries}
+                currency={cur}
+                benchmarks={BENCHMARKS}
+                defaultKey={DEFAULT_BENCHMARK_KEY}
+                initialSeries={benchmarkSeries}
+                days={30}
+              />
             ) : (
-              <div className="grid h-[200px] place-items-center text-sm text-faint">
-                Value history appears once there are trades with price data.
-              </div>
+              <>
+                <h2 className="mb-3 text-sm font-semibold text-muted">
+                  Performance · 30d
+                </h2>
+                <div className="grid h-[200px] place-items-center text-sm text-faint">
+                  Value history appears once there are trades with price data.
+                </div>
+              </>
             )}
           </section>
 

@@ -9,7 +9,7 @@ import type {
   TradeSource,
 } from "@prisma/client";
 import { prisma } from "./db";
-import { getHistory, type PricePoint } from "./prices";
+import { getHistory, getQuotes, type PricePoint } from "./prices";
 
 const EPS = 1e-9;
 
@@ -247,12 +247,25 @@ export async function getValueSeries(
 
   const histories = new Map<string, Map<string, number>>();
   const lastKnown = new Map<string, number>();
-  await Promise.all(
-    [...symbols.entries()].map(async ([symbol, assetType]) => {
-      const pts = await getHistory(symbol, assetType, days + 2);
-      histories.set(symbol, buildDailyIndex(pts));
-    }),
-  );
+
+  // Pre-seed each symbol with its live quote so a momentarily-unavailable price
+  // history doesn't silently value the holding at $0 — the day loop still
+  // prefers real historical prices where present.
+  const [quotes] = await Promise.all([
+    getQuotes(
+      [...symbols.entries()].map(([symbol, assetType]) => ({ symbol, assetType })),
+    ),
+    Promise.all(
+      [...symbols.entries()].map(async ([symbol, assetType]) => {
+        const pts = await getHistory(symbol, assetType, days + 2);
+        histories.set(symbol, buildDailyIndex(pts));
+      }),
+    ),
+  ]);
+  for (const [symbol] of symbols) {
+    const q = quotes[symbol.toUpperCase()];
+    if (q != null) lastKnown.set(symbol, q);
+  }
 
   const out: { t: number; value: number }[] = [];
   const start = Date.now() - days * 24 * 60 * 60 * 1000;

@@ -14,6 +14,7 @@ import type { Benchmark } from "@/lib/benchmarks";
 
 type ValuePoint = { t: number; value: number };
 type PricePoint = { t: number; price: number };
+type PortfolioOpt = { id: string; name: string };
 
 const dayKey = (t: number) => new Date(t).toISOString().slice(0, 10);
 
@@ -37,6 +38,7 @@ export default function PerformanceChart({
   valueSeries,
   currency = "USD",
   benchmarks,
+  portfolios = [],
   defaultKey,
   initialSeries,
   days = 30,
@@ -44,6 +46,7 @@ export default function PerformanceChart({
   valueSeries: ValuePoint[];
   currency?: string;
   benchmarks: Benchmark[];
+  portfolios?: PortfolioOpt[];
   defaultKey: string;
   initialSeries: PricePoint[];
   days?: number;
@@ -54,37 +57,53 @@ export default function PerformanceChart({
   });
   const [loading, setLoading] = useState(false);
 
-  const active = selected === "NONE" ? undefined : benchmarks.find((b) => b.key === selected);
+  // Resolve the current selection to a benchmark, another portfolio, or none.
+  const isPortfolio = selected.startsWith("pf:");
+  const activeBenchmark =
+    !isPortfolio && selected !== "NONE"
+      ? benchmarks.find((b) => b.key === selected)
+      : undefined;
+  const activePortfolio = isPortfolio
+    ? portfolios.find((p) => `pf:${p.id}` === selected)
+    : undefined;
+  const activeLabel = activeBenchmark?.label ?? activePortfolio?.name;
+  const hasActive = Boolean(activeBenchmark || activePortfolio);
 
-  // Fetch benchmark history on demand (default is seeded from the server).
+  // Fetch the comparison series on demand (default benchmark is server-seeded).
   useEffect(() => {
-    if (!active || cache[selected]) return;
+    if (!hasActive || cache[selected]) return;
     let cancelled = false;
     setLoading(true);
-    fetch(
-      `/api/prices/history?symbol=${encodeURIComponent(active.symbol)}&assetType=${active.assetType}&days=${days}`,
-    )
+    const url = activePortfolio
+      ? `/api/portfolios/${activePortfolio.id}/series?days=${days}`
+      : `/api/prices/history?symbol=${encodeURIComponent(activeBenchmark!.symbol)}&assetType=${activeBenchmark!.assetType}&days=${days}`;
+    fetch(url)
       .then((r) => r.json())
       .then((j) => {
-        if (!cancelled && j.ok) setCache((c) => ({ ...c, [selected]: j.data }));
+        if (cancelled || !j.ok) return;
+        // Normalize both sources to {t, price}.
+        const pts: PricePoint[] = activePortfolio
+          ? (j.data as ValuePoint[]).map((d) => ({ t: d.t, price: d.value }))
+          : (j.data as PricePoint[]);
+        setCache((c) => ({ ...c, [selected]: pts }));
       })
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [selected, active, cache, days]);
+  }, [selected, hasActive, activePortfolio, activeBenchmark, cache, days]);
 
-  const { data, portfolioReturn, benchmarkReturn } = useMemo(() => {
+  const { data, portfolioReturn, comparisonReturn } = useMemo(() => {
     // Base off the first day the portfolio actually holds value, so a book that
-    // started mid-window still compares fairly against the benchmark.
+    // started mid-window still compares fairly.
     const baseIdx = valueSeries.findIndex((p) => p.value > 0);
     const start = baseIdx < 0 ? 0 : baseIdx;
     const baseValue = valueSeries[start]?.value ?? 0;
 
-    const series = active ? (cache[selected] ?? []) : [];
+    const series = hasActive ? (cache[selected] ?? []) : [];
     const sorted = [...series].sort((a, b) => a.t - b.t);
 
-    // Forward-filled benchmark price for the base day and each portfolio day.
+    // Forward-filled comparison value for the base day and each portfolio day.
     let ptr = 0;
     let lastPrice: number | null = null;
     const priceForDay = (t: number): number | null => {
@@ -96,29 +115,29 @@ export default function PerformanceChart({
       return lastPrice;
     };
 
-    const basePrice = active ? priceForDay(valueSeries[start]?.t ?? 0) : null;
+    const basePrice = hasActive ? priceForDay(valueSeries[start]?.t ?? 0) : null;
 
     const rows = valueSeries.map((p, i) => {
-      const benchPrice = active ? priceForDay(p.t) : null;
-      const benchValue =
-        active && basePrice && benchPrice && i >= start
-          ? baseValue * (benchPrice / basePrice)
+      const cmpPrice = hasActive ? priceForDay(p.t) : null;
+      const cmpValue =
+        hasActive && basePrice && cmpPrice && i >= start
+          ? baseValue * (cmpPrice / basePrice)
           : null;
-      return { t: p.t, portfolio: p.value, benchmark: benchValue };
+      return { t: p.t, portfolio: p.value, comparison: cmpValue };
     });
 
     const lastValue = valueSeries[valueSeries.length - 1]?.value ?? baseValue;
-    const lastBench = rows[rows.length - 1]?.benchmark ?? null;
+    const lastCmp = rows[rows.length - 1]?.comparison ?? null;
 
     return {
       data: rows,
       portfolioReturn: baseValue > 0 ? (lastValue / baseValue - 1) * 100 : 0,
-      benchmarkReturn:
-        lastBench != null && baseValue > 0 ? (lastBench / baseValue - 1) * 100 : null,
+      comparisonReturn:
+        lastCmp != null && baseValue > 0 ? (lastCmp / baseValue - 1) * 100 : null,
     };
-  }, [valueSeries, cache, selected, active]);
+  }, [valueSeries, cache, selected, hasActive]);
 
-  const beat = benchmarkReturn != null && portfolioReturn >= benchmarkReturn;
+  const beat = comparisonReturn != null && portfolioReturn >= comparisonReturn;
 
   return (
     <div>
@@ -133,16 +152,16 @@ export default function PerformanceChart({
                 {pct(portfolioReturn)}
               </span>
             </span>
-            {active && benchmarkReturn != null ? (
+            {hasActive && comparisonReturn != null ? (
               <span className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: "var(--text-muted)" }} />
-                <span className="text-muted">{active.label}</span>
-                <span className="tabular font-medium" style={{ color: benchmarkReturn >= 0 ? "var(--gain)" : "var(--loss)" }}>
-                  {pct(benchmarkReturn)}
+                <span className="text-muted">{activeLabel}</span>
+                <span className="tabular font-medium" style={{ color: comparisonReturn >= 0 ? "var(--gain)" : "var(--loss)" }}>
+                  {pct(comparisonReturn)}
                 </span>
               </span>
             ) : null}
-            {active && benchmarkReturn != null ? (
+            {hasActive && comparisonReturn != null ? (
               <span
                 className="rounded-md px-1.5 py-0.5 text-xs font-semibold"
                 style={{
@@ -151,7 +170,7 @@ export default function PerformanceChart({
                 }}
               >
                 {beat ? "Outperforming" : "Underperforming"} by{" "}
-                {Math.abs(portfolioReturn - benchmarkReturn).toFixed(2)}%
+                {Math.abs(portfolioReturn - comparisonReturn).toFixed(2)}%
               </span>
             ) : null}
           </div>
@@ -163,11 +182,22 @@ export default function PerformanceChart({
             onChange={(e) => setSelected(e.target.value)}
             className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
           >
-            {benchmarks.map((b) => (
-              <option key={b.key} value={b.key}>
-                {b.label}
-              </option>
-            ))}
+            <optgroup label="Benchmarks">
+              {benchmarks.map((b) => (
+                <option key={b.key} value={b.key}>
+                  {b.label}
+                </option>
+              ))}
+            </optgroup>
+            {portfolios.length > 0 ? (
+              <optgroup label="Portfolios">
+                {portfolios.map((p) => (
+                  <option key={p.id} value={`pf:${p.id}`}>
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
             <option value="NONE">None</option>
           </select>
         </label>
@@ -217,7 +247,7 @@ export default function PerformanceChart({
             }
             formatter={(v: number, name: string) => [
               v == null ? "—" : fmtMoney(v, currency),
-              name === "portfolio" ? "Portfolio" : (active?.label ?? "Benchmark"),
+              name === "portfolio" ? "Portfolio" : (activeLabel ?? "Comparison"),
             ]}
           />
           <Area
@@ -229,10 +259,10 @@ export default function PerformanceChart({
             dot={false}
             activeDot={{ r: 4 }}
           />
-          {active ? (
+          {hasActive ? (
             <Line
               type="monotone"
-              dataKey="benchmark"
+              dataKey="comparison"
               stroke="var(--text-muted)"
               strokeWidth={1.75}
               strokeDasharray="5 4"
@@ -243,10 +273,10 @@ export default function PerformanceChart({
         </ComposedChart>
       </ResponsiveContainer>
       {loading ? (
-        <p className="mt-1 text-center text-xs text-faint">Loading {active?.label}…</p>
-      ) : active && (cache[selected]?.length ?? 0) === 0 && !loading ? (
+        <p className="mt-1 text-center text-xs text-faint">Loading {activeLabel}…</p>
+      ) : hasActive && (cache[selected]?.length ?? 0) === 0 && !loading ? (
         <p className="mt-1 text-center text-xs text-faint">
-          {active.label} data unavailable right now.
+          {activeLabel} data unavailable right now.
         </p>
       ) : null}
     </div>

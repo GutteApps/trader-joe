@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { prisma } from "@/lib/db";
 import { getPortfolioView } from "@/lib/queries";
 import { getValueSeries } from "@/lib/portfolio";
 import { getHistory } from "@/lib/prices";
@@ -35,15 +36,21 @@ export default async function PortfolioPage({
   const cur = portfolio.baseCurrency;
 
   const defaultBenchmark = getBenchmark(DEFAULT_BENCHMARK_KEY)!;
-  const [valueSeries, assetHistories, benchmarkSeries] = await Promise.all([
-    getValueSeries(id, 30),
-    Promise.all(
-      metrics.positions.map((p) =>
-        getHistory(p.position.symbol, p.position.assetType, 30),
+  const [valueSeries, assetHistories, benchmarkSeries, otherPortfolios] =
+    await Promise.all([
+      getValueSeries(id, 30),
+      Promise.all(
+        metrics.positions.map((p) =>
+          getHistory(p.position.symbol, p.position.assetType, 30),
+        ),
       ),
-    ),
-    getHistory(defaultBenchmark.symbol, defaultBenchmark.assetType, 30),
-  ]);
+      getHistory(defaultBenchmark.symbol, defaultBenchmark.assetType, 30),
+      prisma.portfolio.findMany({
+        where: { id: { not: id } },
+        select: { id: true, name: true },
+        orderBy: { createdAt: "asc" },
+      }),
+    ]);
 
   const allocation = metrics.positions.map((p) => ({
     symbol: p.position.symbol,
@@ -122,6 +129,7 @@ export default async function PortfolioPage({
                 valueSeries={valueSeries}
                 currency={cur}
                 benchmarks={BENCHMARKS}
+                portfolios={otherPortfolios}
                 defaultKey={DEFAULT_BENCHMARK_KEY}
                 initialSeries={benchmarkSeries}
                 days={30}

@@ -159,5 +159,10 @@ approved and links it to the trade.
 - Money/quantities are stored as `Float` for clean JSON + charting during dummy
   trading. When moving to **real money**, tighten these to `Decimal` in
   `prisma/schema.prisma` and re-migrate.
-- Crypto prices need no API key. Stock **history** uses Stooq (free); live stock
-  **quotes** use Finnhub if `FINNHUB_API_KEY` is set, otherwise last close.
+- Crypto prices need no API key (CoinGecko). Stock/ETF/benchmark prices use
+  Yahoo Finance (no key); if `FINNHUB_API_KEY` is set it's used for live stock
+  quotes, otherwise Yahoo's live price / last close.
+- Portfolio detail includes a **benchmark comparison** on the value chart
+  (default **S&P 500**, switchable to Nasdaq 100, Bitcoin, Ethereum, Gold): it
+  plots what your starting capital would be worth in the benchmark over the same
+  window, with each side's % return.

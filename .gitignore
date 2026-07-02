@@ -42,3 +42,6 @@ next-env.d.ts
 
 # temp secret file used by scripts/fix-db-password.mjs
 .db-password
+
+# temp Vercel API token (deleted after use)
+.vercel-token

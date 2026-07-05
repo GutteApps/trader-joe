@@ -127,6 +127,7 @@ export default async function PortfolioPage({
             {valueSeries.length > 1 ? (
               <PerformanceChart
                 valueSeries={valueSeries}
+                portfolioId={portfolio.id}
                 currency={cur}
                 benchmarks={BENCHMARKS}
                 portfolios={otherPortfolios}

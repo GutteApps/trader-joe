@@ -16,11 +16,15 @@ type ValuePoint = { t: number; value: number };
 type PricePoint = { t: number; price: number };
 type PortfolioOpt = { id: string; name: string };
 
+const TIMEFRAMES = [
+  { days: 7, label: "7D" },
+  { days: 30, label: "30D" },
+  { days: 90, label: "90D" },
+  { days: 365, label: "1Y" },
+];
+
 const dayKey = (t: number) => new Date(t).toISOString().slice(0, 10);
 
-function fmtAxisDate(t: number) {
-  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
 function fmtCompact(n: number) {
   return new Intl.NumberFormat("en-US", {
     notation: "compact",
@@ -35,15 +39,17 @@ function pct(n: number) {
 }
 
 export default function PerformanceChart({
-  valueSeries,
+  valueSeries: initialValueSeries,
+  portfolioId,
   currency = "USD",
   benchmarks,
   portfolios = [],
   defaultKey,
   initialSeries,
-  days = 30,
+  days: initialDays = 30,
 }: {
   valueSeries: ValuePoint[];
+  portfolioId: string;
   currency?: string;
   benchmarks: Benchmark[];
   portfolios?: PortfolioOpt[];
@@ -51,13 +57,22 @@ export default function PerformanceChart({
   initialSeries: PricePoint[];
   days?: number;
 }) {
+  const [days, setDays] = useState(initialDays);
   const [selected, setSelected] = useState(defaultKey);
-  const [cache, setCache] = useState<Record<string, PricePoint[]>>({
-    [defaultKey]: initialSeries,
-  });
-  const [loading, setLoading] = useState(false);
 
-  // Resolve the current selection to a benchmark, another portfolio, or none.
+  // Series are cached per timeframe so switching back is instant. The default
+  // 30D portfolio + benchmark series are seeded from the server.
+  const [valueCache, setValueCache] = useState<Record<number, ValuePoint[]>>({
+    [initialDays]: initialValueSeries,
+  });
+  const [cmpCache, setCmpCache] = useState<Record<string, PricePoint[]>>({
+    [`${defaultKey}:${initialDays}`]: initialSeries,
+  });
+
+  const valueSeries = valueCache[days];
+  const cmpKey = `${selected}:${days}`;
+
+  // Resolve the current comparison selection.
   const isPortfolio = selected.startsWith("pf:");
   const activeBenchmark =
     !isPortfolio && selected !== "NONE"
@@ -69,11 +84,24 @@ export default function PerformanceChart({
   const activeLabel = activeBenchmark?.label ?? activePortfolio?.name;
   const hasActive = Boolean(activeBenchmark || activePortfolio);
 
-  // Fetch the comparison series on demand (default benchmark is server-seeded).
+  // Fetch this portfolio's value series for the chosen timeframe.
   useEffect(() => {
-    if (!hasActive || cache[selected]) return;
+    if (valueCache[days]) return;
     let cancelled = false;
-    setLoading(true);
+    fetch(`/api/portfolios/${portfolioId}/series?days=${days}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (!cancelled && j.ok) setValueCache((c) => ({ ...c, [days]: j.data }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days, portfolioId, valueCache]);
+
+  // Fetch the comparison series for the chosen selection + timeframe.
+  useEffect(() => {
+    if (!hasActive || cmpCache[cmpKey]) return;
+    let cancelled = false;
     const url = activePortfolio
       ? `/api/portfolios/${activePortfolio.id}/series?days=${days}`
       : `/api/prices/history?symbol=${encodeURIComponent(activeBenchmark!.symbol)}&assetType=${activeBenchmark!.assetType}&days=${days}`;
@@ -81,29 +109,28 @@ export default function PerformanceChart({
       .then((r) => r.json())
       .then((j) => {
         if (cancelled || !j.ok) return;
-        // Normalize both sources to {t, price}.
         const pts: PricePoint[] = activePortfolio
           ? (j.data as ValuePoint[]).map((d) => ({ t: d.t, price: d.value }))
           : (j.data as PricePoint[]);
-        setCache((c) => ({ ...c, [selected]: pts }));
-      })
-      .finally(() => !cancelled && setLoading(false));
+        setCmpCache((c) => ({ ...c, [cmpKey]: pts }));
+      });
     return () => {
       cancelled = true;
     };
-  }, [selected, hasActive, activePortfolio, activeBenchmark, cache, days]);
+  }, [cmpKey, days, hasActive, activePortfolio, activeBenchmark, cmpCache]);
+
+  const loadingValue = !valueSeries;
+  const loadingCmp = hasActive && !cmpCache[cmpKey];
 
   const { data, portfolioReturn, comparisonReturn } = useMemo(() => {
-    // Base off the first day the portfolio actually holds value, so a book that
-    // started mid-window still compares fairly.
-    const baseIdx = valueSeries.findIndex((p) => p.value > 0);
+    const vs = valueSeries ?? [];
+    const baseIdx = vs.findIndex((p) => p.value > 0);
     const start = baseIdx < 0 ? 0 : baseIdx;
-    const baseValue = valueSeries[start]?.value ?? 0;
+    const baseValue = vs[start]?.value ?? 0;
 
-    const series = hasActive ? (cache[selected] ?? []) : [];
+    const series = hasActive ? (cmpCache[cmpKey] ?? []) : [];
     const sorted = [...series].sort((a, b) => a.t - b.t);
 
-    // Forward-filled comparison value for the base day and each portfolio day.
     let ptr = 0;
     let lastPrice: number | null = null;
     const priceForDay = (t: number): number | null => {
@@ -115,9 +142,9 @@ export default function PerformanceChart({
       return lastPrice;
     };
 
-    const basePrice = hasActive ? priceForDay(valueSeries[start]?.t ?? 0) : null;
+    const basePrice = hasActive ? priceForDay(vs[start]?.t ?? 0) : null;
 
-    const rows = valueSeries.map((p, i) => {
+    const rows = vs.map((p, i) => {
       const cmpPrice = hasActive ? priceForDay(p.t) : null;
       const cmpValue =
         hasActive && basePrice && cmpPrice && i >= start
@@ -126,7 +153,7 @@ export default function PerformanceChart({
       return { t: p.t, portfolio: p.value, comparison: cmpValue };
     });
 
-    const lastValue = valueSeries[valueSeries.length - 1]?.value ?? baseValue;
+    const lastValue = vs[vs.length - 1]?.value ?? baseValue;
     const lastCmp = rows[rows.length - 1]?.comparison ?? null;
 
     return {
@@ -135,15 +162,21 @@ export default function PerformanceChart({
       comparisonReturn:
         lastCmp != null && baseValue > 0 ? (lastCmp / baseValue - 1) * 100 : null,
     };
-  }, [valueSeries, cache, selected, hasActive]);
+  }, [valueSeries, cmpCache, cmpKey, hasActive]);
 
   const beat = comparisonReturn != null && portfolioReturn >= comparisonReturn;
+
+  const tickFmt = (t: number) =>
+    new Date(t).toLocaleDateString(
+      "en-US",
+      days >= 180 ? { month: "short" } : { month: "short", day: "numeric" },
+    );
 
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <h2 className="text-sm font-semibold text-muted">Performance · {days}d</h2>
+          <h2 className="text-sm font-semibold text-muted">Performance</h2>
           <div className="flex items-center gap-3 text-sm">
             <span className="flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full" style={{ background: "var(--accent)" }} />
@@ -175,106 +208,128 @@ export default function PerformanceChart({
             ) : null}
           </div>
         </div>
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <span>vs</span>
-          <select
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-            className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
-          >
-            <optgroup label="Benchmarks">
-              {benchmarks.map((b) => (
-                <option key={b.key} value={b.key}>
-                  {b.label}
-                </option>
-              ))}
-            </optgroup>
-            {portfolios.length > 0 ? (
-              <optgroup label="Portfolios">
-                {portfolios.map((p) => (
-                  <option key={p.id} value={`pf:${p.id}`}>
-                    {p.name}
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg bg-surface-2 p-0.5">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf.days}
+                type="button"
+                onClick={() => setDays(tf.days)}
+                className="rounded-md px-2.5 py-1 text-xs font-semibold transition-colors"
+                style={{
+                  background: days === tf.days ? "var(--surface)" : "transparent",
+                  color: days === tf.days ? "var(--text)" : "var(--text-muted)",
+                }}
+              >
+                {tf.label}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <span>vs</span>
+            <select
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
+            >
+              <optgroup label="Benchmarks">
+                {benchmarks.map((b) => (
+                  <option key={b.key} value={b.key}>
+                    {b.label}
                   </option>
                 ))}
               </optgroup>
-            ) : null}
-            <option value="NONE">None</option>
-          </select>
-        </label>
+              {portfolios.length > 0 ? (
+                <optgroup label="Portfolios">
+                  {portfolios.map((p) => (
+                    <option key={p.id} value={`pf:${p.id}`}>
+                      {p.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              <option value="NONE">None</option>
+            </select>
+          </label>
+        </div>
       </div>
 
-      <ResponsiveContainer width="100%" height={260}>
-        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-          <defs>
-            <linearGradient id="perfFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.32} />
-              <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <XAxis
-            dataKey="t"
-            type="number"
-            scale="time"
-            domain={["dataMin", "dataMax"]}
-            tickFormatter={fmtAxisDate}
-            tick={{ fill: "var(--text-faint)", fontSize: 11 }}
-            axisLine={false}
-            tickLine={false}
-            minTickGap={40}
-          />
-          <YAxis
-            tickFormatter={fmtCompact}
-            tick={{ fill: "var(--text-faint)", fontSize: 11 }}
-            axisLine={false}
-            tickLine={false}
-            width={44}
-            domain={["auto", "auto"]}
-          />
-          <Tooltip
-            contentStyle={{
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 12,
-              color: "var(--text)",
-              fontSize: 12,
-            }}
-            labelFormatter={(t) =>
-              new Date(t as number).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-                year: "numeric",
-              })
-            }
-            formatter={(v: number, name: string) => [
-              v == null ? "—" : fmtMoney(v, currency),
-              name === "portfolio" ? "Portfolio" : (activeLabel ?? "Comparison"),
-            ]}
-          />
-          <Area
-            type="monotone"
-            dataKey="portfolio"
-            stroke="var(--accent)"
-            strokeWidth={2}
-            fill="url(#perfFill)"
-            dot={false}
-            activeDot={{ r: 4 }}
-          />
-          {hasActive ? (
-            <Line
-              type="monotone"
-              dataKey="comparison"
-              stroke="var(--text-muted)"
-              strokeWidth={1.75}
-              strokeDasharray="5 4"
-              dot={false}
-              connectNulls
+      {loadingValue ? (
+        <div className="h-[260px] animate-pulse rounded-lg bg-surface-2 opacity-50" />
+      ) : (
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+            <defs>
+              <linearGradient id="perfFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.32} />
+                <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis
+              dataKey="t"
+              type="number"
+              scale="time"
+              domain={["dataMin", "dataMax"]}
+              tickFormatter={tickFmt}
+              tick={{ fill: "var(--text-faint)", fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={40}
             />
-          ) : null}
-        </ComposedChart>
-      </ResponsiveContainer>
-      {loading ? (
+            <YAxis
+              tickFormatter={fmtCompact}
+              tick={{ fill: "var(--text-faint)", fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              width={44}
+              domain={["auto", "auto"]}
+            />
+            <Tooltip
+              contentStyle={{
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                color: "var(--text)",
+                fontSize: 12,
+              }}
+              labelFormatter={(t) =>
+                new Date(t as number).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })
+              }
+              formatter={(v: number, name: string) => [
+                v == null ? "—" : fmtMoney(v, currency),
+                name === "portfolio" ? "Portfolio" : (activeLabel ?? "Comparison"),
+              ]}
+            />
+            <Area
+              type="monotone"
+              dataKey="portfolio"
+              stroke="var(--accent)"
+              strokeWidth={2}
+              fill="url(#perfFill)"
+              dot={false}
+              activeDot={{ r: 4 }}
+            />
+            {hasActive ? (
+              <Line
+                type="monotone"
+                dataKey="comparison"
+                stroke="var(--text-muted)"
+                strokeWidth={1.75}
+                strokeDasharray="5 4"
+                dot={false}
+                connectNulls
+              />
+            ) : null}
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
+      {loadingCmp && !loadingValue ? (
         <p className="mt-1 text-center text-xs text-faint">Loading {activeLabel}…</p>
-      ) : hasActive && (cache[selected]?.length ?? 0) === 0 && !loading ? (
+      ) : hasActive && !loadingCmp && (cmpCache[cmpKey]?.length ?? 0) === 0 ? (
         <p className="mt-1 text-center text-xs text-faint">
           {activeLabel} data unavailable right now.
         </p>

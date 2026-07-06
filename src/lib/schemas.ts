@@ -11,6 +11,16 @@ export const createPortfolioSchema = z.object({
   baseCurrency: z.string().min(1).max(8).default("USD"),
 });
 
+export const updatePortfolioSchema = z
+  .object({
+    name: z.string().min(1).max(80).optional(),
+    type: portfolioTypeSchema.optional(),
+    baseCurrency: z.string().min(1).max(8).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, {
+    message: "at least one field is required",
+  });
+
 export const createRecommendationSchema = z.object({
   portfolioId: z.string().optional(),
   symbol: z.string().min(1).max(20),

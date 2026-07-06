@@ -13,7 +13,7 @@ export async function listPortfoliosWithValue() {
 
   const allOpen = portfolios.flatMap((p) =>
     p.positions
-      .filter((pos) => pos.quantity > 0)
+      .filter((pos) => pos.quantity !== 0)
       .map((pos) => ({ symbol: pos.symbol, assetType: pos.assetType })),
   );
   const quotes = await getQuotes(allOpen);
@@ -42,7 +42,7 @@ export async function getPortfolioView(id: string) {
 
   const quotes = await getQuotes(
     portfolio.positions
-      .filter((p) => p.quantity > 0)
+      .filter((p) => p.quantity !== 0)
       .map((p) => ({ symbol: p.symbol, assetType: p.assetType })),
   );
   const metrics = computeMetrics(portfolio.positions, quotes);

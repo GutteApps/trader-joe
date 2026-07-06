@@ -57,57 +57,68 @@ export async function applyTrade(
       where: { portfolioId_symbol: { portfolioId: input.portfolioId, symbol } },
     });
 
-    let position: Position;
+    // Signed-quantity model: positive quantity = long, negative = short.
+    // A BUY adds +qty, a SELL adds -qty. This supports opening/adding to a
+    // position, reducing/closing it, covering a short, and flipping through
+    // zero (e.g. selling more than a long held opens a short for the remainder).
+    const dir = input.side === "BUY" ? 1 : -1;
+    const q0 = existing?.quantity ?? 0;
+    const avg0 = existing?.avgCost ?? 0;
+    const realized0 = existing?.realizedPnl ?? 0;
 
-    if (input.side === "BUY") {
-      if (existing) {
-        const newQty = existing.quantity + qty;
-        const newBasis = existing.quantity * existing.avgCost + qty * price + fee;
-        position = await tx.position.update({
-          where: { id: existing.id },
-          data: {
-            quantity: newQty,
-            avgCost: newBasis / newQty,
-            assetType: input.assetType,
-            status: "OPEN",
-            closedAt: null,
-            ...(input.name ? { name: input.name } : {}),
-          },
-        });
-      } else {
-        position = await tx.position.create({
-          data: {
-            portfolioId: input.portfolioId,
-            symbol,
-            assetType: input.assetType,
-            quantity: qty,
-            avgCost: (qty * price + fee) / qty,
-            name: input.name ?? null,
-            status: "OPEN",
-          },
-        });
-      }
+    let newQty: number;
+    let newAvg: number;
+    let newRealized = realized0;
+
+    if (q0 === 0 || Math.sign(q0) === dir) {
+      // opening a fresh position, or adding to the same side (long or short)
+      const absOld = Math.abs(q0);
+      newQty = q0 + dir * qty;
+      newAvg = (absOld * avg0 + qty * price) / (absOld + qty);
+      newRealized = realized0 - fee;
     } else {
-      // SELL
-      if (!existing || existing.quantity <= EPS) {
-        throw new TradeError(`no open position in ${symbol} to sell`);
-      }
-      if (qty > existing.quantity + EPS) {
-        throw new TradeError(
-          `cannot sell ${qty} ${symbol}; only ${existing.quantity} held`,
-        );
-      }
-      const proceeds = qty * price - fee;
-      const costOfSold = qty * existing.avgCost;
-      const newQty = existing.quantity - qty;
-      const closed = newQty <= EPS;
+      // reducing / covering the opposite side; may flip through zero
+      const closeQty = Math.min(qty, Math.abs(q0));
+      // long closed by a SELL profits when price > entry; short covered by a
+      // BUY profits when price < entry.
+      const pnlPerShare = q0 > 0 ? price - avg0 : avg0 - price;
+      newRealized = realized0 + pnlPerShare * closeQty - fee;
+      newQty = q0 + dir * qty;
+      if (Math.abs(newQty) <= EPS) newAvg = avg0; // fully flat
+      else if (Math.sign(newQty) === Math.sign(q0)) newAvg = avg0; // partial close
+      else newAvg = price; // flipped: remainder opened at this fill price
+    }
+
+    const closed = Math.abs(newQty) <= EPS;
+    const status = closed ? "CLOSED" : "OPEN";
+    const closedAt = closed ? (input.executedAt ?? new Date()) : null;
+
+    let position: Position;
+    if (existing) {
       position = await tx.position.update({
         where: { id: existing.id },
         data: {
           quantity: closed ? 0 : newQty,
-          realizedPnl: existing.realizedPnl + (proceeds - costOfSold),
-          status: closed ? "CLOSED" : "OPEN",
-          closedAt: closed ? (input.executedAt ?? new Date()) : null,
+          avgCost: newAvg,
+          realizedPnl: newRealized,
+          assetType: input.assetType,
+          status,
+          closedAt,
+          ...(input.name ? { name: input.name } : {}),
+        },
+      });
+    } else {
+      position = await tx.position.create({
+        data: {
+          portfolioId: input.portfolioId,
+          symbol,
+          assetType: input.assetType,
+          quantity: closed ? 0 : newQty,
+          avgCost: newAvg,
+          realizedPnl: newRealized,
+          name: input.name ?? null,
+          status,
+          closedAt,
         },
       });
     }
@@ -172,7 +183,8 @@ export function computeMetrics(
   positions: Position[],
   quotes: Record<string, number>,
 ): PortfolioMetrics {
-  const open = positions.filter((p) => p.quantity > EPS);
+  // Include both longs (quantity > 0) and shorts (quantity < 0).
+  const open = positions.filter((p) => Math.abs(p.quantity) > EPS);
   let totalValue = 0;
   let totalCost = 0;
   let unrealizedPnl = 0;
@@ -180,12 +192,16 @@ export function computeMetrics(
 
   const rows = open.map((position) => {
     const currentPrice = quotes[position.symbol.toUpperCase()] ?? null;
+    // Signed: shorts have negative quantity, so costBasis/marketValue are
+    // negative and `pnl` is naturally inverted (short profits when price falls).
     const costBasis = position.quantity * position.avgCost;
     const marketValue =
       currentPrice != null ? position.quantity * currentPrice : costBasis;
     const pnl = marketValue - costBasis;
-    totalValue += marketValue;
-    totalCost += costBasis;
+    // Totals use gross (absolute) exposure so shorts add value instead of
+    // cancelling longs; P&L stays signed and correct.
+    totalValue += Math.abs(marketValue);
+    totalCost += Math.abs(costBasis);
     unrealizedPnl += currentPrice != null ? pnl : 0;
     return {
       position,
@@ -193,13 +209,15 @@ export function computeMetrics(
       marketValue,
       costBasis,
       unrealizedPnl: currentPrice != null ? pnl : 0,
-      unrealizedPnlPct: costBasis > 0 ? (pnl / costBasis) * 100 : 0,
+      unrealizedPnlPct:
+        Math.abs(costBasis) > EPS ? (pnl / Math.abs(costBasis)) * 100 : 0,
       allocationPct: 0, // filled below
     };
   });
 
   for (const r of rows) {
-    r.allocationPct = totalValue > 0 ? (r.marketValue / totalValue) * 100 : 0;
+    r.allocationPct =
+      totalValue > 0 ? (Math.abs(r.marketValue) / totalValue) * 100 : 0;
   }
 
   const totalPnl = unrealizedPnl + realizedPnl;
